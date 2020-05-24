@@ -1,39 +1,61 @@
 import requests as r
 import bs4
-import os
+
+import db_management
+import psycopg2
 
 import HelperFunctions
-import properties
 
 
-
-def get_artists_from_response(response):
-    soup = bs4.BeautifulSoup(response.text, features="html.parser")
+def get_artists_from_soup(soup):
     return [ele.find('a').text for ele in soup.find_all(attrs={"class": "artist"})]
 
 
-def write_artists_to_file(file_name):
-    if os.path.exists(file_name):
-        try:
-            with open(file_name, 'r') as f:
-                lines = f.readlines()
-                date_to_check = HelperFunctions.get_date_string_plus_seven(lines[-1].split(",")[0])
-        except IndexError:
-            date_to_check = properties.START_DATE
-    else:
-        date_to_check = properties.START_DATE
+def get_song_from_soup(soup):
+    return [ele.find('a').text for ele in soup.find_all(attrs={"class": "title"})]
 
-    with open(file_name, 'a') as f:
-        response = r.get(properties.SITE_ROOT + date_to_check)
-        artists = get_artists_from_response(response)
+
+def create_soup_from_response(response):
+    return bs4.BeautifulSoup(response.text, features="html.parser")
+
+
+def write_artists_to_db():
+    conn = None
+
+    try:
+        conn, cur = db_management.get_db_conn_cursor()
+
+        date_to_check = HelperFunctions.get_miner_values()["date_to_check"]
+        site_root = HelperFunctions.get_miner_values()["site_root"]
+
+        response = r.get(site_root + date_to_check)
+        soup = create_soup_from_response(response)
+        artists = get_artists_from_soup(soup)
+        songs = get_song_from_soup(soup)
 
         while len(artists) != 0 and response.status_code == 200:
-            print("Checking {}".format(date_to_check))
-            f.write(",".join([str(date_to_check)] + artists))
-            f.write("\n")
-            f.flush()
-            print(artists)
+            db_management.add_date_rows(zip(artists, songs), date_to_check, cur=cur)
+            print("Checked {}".format(date_to_check))
+            conn.commit()
+            HelperFunctions.set_miner_date_value(date_to_check)
 
             date_to_check = HelperFunctions.get_date_string_plus_seven(date_to_check)
-            response = r.get(properties.SITE_ROOT + date_to_check)
-            artists = get_artists_from_response(r.get(properties.SITE_ROOT + date_to_check))
+
+            response = r.get(HelperFunctions.get_miner_values()["site_root"] + date_to_check)
+            soup = create_soup_from_response((r.get(site_root + date_to_check)))
+
+            artists = get_artists_from_soup(soup)
+            songs = get_song_from_soup(soup)
+
+        if response.status_code != 200:
+            print("Got a non-200 error..")
+        cur.close()
+    except (Exception, psycopg2.DatabaseError) as e:
+        print(e)
+
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+write_artists_to_db()
